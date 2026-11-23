@@ -81,6 +81,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/calendar", get(calendar))
         .route("/api/work", get(work))
         .route("/api/quotas", get(quotas))
+        .route("/api/batteries", get(batteries))
         .route("/api/run/{id}", post(run_shortcut))
         .route("/api/settings", get(settings_get).put(settings_put))
         .route("/api/widget/{page}/{id}/note", post(save_note))
@@ -429,6 +430,10 @@ async fn calendar(State(app): State<Arc<App>>) -> Json<Value> {
 async fn work(State(app): State<Arc<App>>) -> Json<Value> {
     let cfg = load_config(&app.config_path).unwrap_or_else(|_| json!({}));
     Json(app.feeds.work(&cfg))
+}
+
+async fn batteries() -> Json<Value> {
+    Json(metrics::batteries())
 }
 
 async fn quotas(State(app): State<Arc<App>>) -> Json<Value> {

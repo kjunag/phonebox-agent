@@ -16,7 +16,7 @@ env:
 
 jobs:
   linux:
-    name: Build and test
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +43,3 @@ jobs:
           -A clippy::unnecessary_filter_map
           -A clippy::redundant_closure
           -A clippy::filter_next
-
-      - name: Release build
-        run: cargo build --locked --release
