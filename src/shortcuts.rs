@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Mutex;
 
-use serde_json::{json, Value};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 /// Toggle and cycle memory. Lost on restart, same as the original agent.
 pub struct Memory {

@@ -58,6 +58,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/stream", get(stream))
         .route("/api/config", get(config_route))
         .route("/api/procs", get(procs))
+        .route("/api/procs/icon", get(proc_icon))
         .route("/api/procs/detail", get(proc_detail))
         .route("/api/procs/kill", post(kill_proc))
         .route("/api/info", get(info))
@@ -175,6 +176,14 @@ async fn procs(State(app): State<Arc<App>>, Query(query): Query<Vec<(String, Str
         },
     };
     Json(app.metrics.procs(top)).into_response()
+}
+
+async fn proc_icon(Query(query): Query<Vec<(String, String)>>) -> Response {
+    let name = query.iter().find(|(key, _)| key == "name").map(|(_, value)| value.as_str()).unwrap_or("");
+    match metrics::proc_icon(name) {
+        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-store")], bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn proc_detail(State(app): State<Arc<App>>, Query(query): Query<Vec<(String, String)>>) -> Json<Value> {
