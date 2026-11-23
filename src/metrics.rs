@@ -1280,6 +1280,22 @@ mod tests {
     }
 
     #[test]
+    fn the_laptop_battery_is_named_and_a_comma_percentage_is_whole() {
+        let info = "  model: ASUS Battery\n  battery\n    present: yes\n    state: discharging\n    percentage: 76%\n    capacity: 83,6414%\n";
+        let device = parse_upower("/org/freedesktop/UPower/devices/battery_BAT0", info).unwrap();
+        assert_eq!(device["name"], "This laptop");
+        assert_eq!(device["level"], 76);
+        assert_eq!(device["kind"], "laptop");
+        assert_eq!(device["charging"], false);
+        let fractional = "    present: yes\n    state: charging\n    percentage: 75,5%\n";
+        let device = parse_upower("/org/freedesktop/UPower/devices/headset_sony", fractional).unwrap();
+        assert_eq!(device["level"], 75);
+        assert_eq!(device["kind"], "headphones");
+        assert_eq!(device["charging"], true);
+        assert!(parse_upower("/org/freedesktop/UPower/devices/battery_BAT0", "    present: no\n    percentage: 10%\n").is_none());
+    }
+
+    #[test]
     fn an_nvidia_line_keeps_memory_in_gigabytes() {
         let mut names = HashMap::new();
         names.insert(0, ("NVIDIA GeForce RTX 4070".to_string(), Some("560.35".to_string())));
@@ -1439,6 +1455,66 @@ fn proc_rss_mb(pid: i32) -> f64 {
         }
     }
     0.0
+}
+
+pub fn batteries() -> Value {
+    let Some(list) = run(&["upower", "-e"]) else { return json!({"devices": []}) };
+    let mut devices = Vec::new();
+    for path in list.lines() {
+        let path = path.trim();
+        if path.is_empty() || path.ends_with("DisplayDevice") || path.contains("line_power") { continue }
+        let Some(info) = run(&["upower", "-i", path]) else { continue };
+        if let Some(device) = parse_upower(path, &info) { devices.push(device) }
+    }
+    devices.sort_by(|a, b| {
+        let rank = |device: &Value| i32::from(device["kind"] == "laptop");
+        rank(a).cmp(&rank(b)).then_with(|| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")))
+    });
+    json!({"devices": devices})
+}
+
+fn parse_upower(path: &str, info: &str) -> Option<Value> {
+    if upower_field(info, "present").as_deref() == Some("no") { return None }
+    let level = upower_field(info, "percentage")?
+        .trim()
+        .trim_end_matches('%')
+        .split([',', '.'])
+        .next()?
+        .trim()
+        .parse::<i32>()
+        .ok()?
+        .clamp(0, 100);
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let named = upower_field(info, "model").filter(|model| !model.is_empty());
+    let guessed = device_kind(file);
+    let kind = guessed.unwrap_or_else(|| kind_of(named.as_deref().unwrap_or(file)));
+    let name = if kind == "laptop" { "This laptop".to_string() } else { named.unwrap_or_else(|| file.to_string()) };
+    let charging = upower_field(info, "state").map(|state| state == "charging" || state == "fully-charged");
+    Some(json!({"name": name, "level": level, "kind": kind, "charging": charging}))
+}
+
+fn upower_field(info: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    info.lines().map(str::trim).find_map(|line| line.strip_prefix(&prefix).map(|value| value.trim().to_string()))
+}
+
+fn device_kind(file: &str) -> Option<&'static str> {
+    if file.starts_with("battery_") { Some("laptop") }
+    else if file.starts_with("mouse_") { Some("mouse") }
+    else if file.starts_with("keyboard_") { Some("keyboard") }
+    else if file.starts_with("headset_") || file.starts_with("headphones_") { Some("headphones") }
+    else if file.starts_with("gaming_input_") { Some("controller") }
+    else { None }
+}
+
+fn kind_of(name: &str) -> &'static str {
+    let name = name.to_ascii_lowercase();
+    if ["buds", "airpods", "headphone", "headset", "earbud", "earphone"].iter().any(|word| name.contains(word)) { "headphones" }
+    else if name.contains("mouse") || name.contains("trackball") || name.contains("trackpad") { "mouse" }
+    else if name.contains("keyboard") { "keyboard" }
+    else if ["controller", "gamepad", "xbox", "dualsense", "dualshock"].iter().any(|word| name.contains(word)) { "controller" }
+    else if name.contains("pencil") || name.contains("stylus") || name.split_whitespace().any(|word| word == "pen") { "pen" }
+    else { "other" }
 }
 
 fn run(args: &[&str]) -> Option<String> {

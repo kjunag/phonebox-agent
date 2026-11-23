@@ -1,4 +1,5 @@
 mod approvals;
+mod assets;
 mod auth;
 mod feeds;
 mod http;

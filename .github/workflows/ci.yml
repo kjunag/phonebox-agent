@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -16,10 +18,11 @@ env:
 
 jobs:
   linux:
-    name: Build and test
+    name: Test
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -44,5 +47,17 @@ jobs:
           -A clippy::redundant_closure
           -A clippy::filter_next
 
-      - name: Release build
-        run: cargo build --locked --release
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.23.0
+
+      - name: Audit
+        run: cargo audit

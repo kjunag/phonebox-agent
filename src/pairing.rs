@@ -150,10 +150,7 @@ pub fn hostname() -> String {
 }
 
 pub fn app_download() -> String {
-    let path = match std::env::var_os("PHONEBOX_ASSETS") {
-        Some(dir) => std::path::PathBuf::from(dir).join("PhoneBox.Agent.csproj"),
-        None => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/PhoneBox.Agent.csproj"),
-    };
+    let path = crate::assets::asset("PhoneBox.Agent.csproj");
     let version = std::fs::read_to_string(path).ok().and_then(|text| {
         text.split("<Version>").nth(1).and_then(|rest| rest.split("</Version>").next()).map(|value| value.trim().to_string())
     }).unwrap_or_else(|| "0.9.29".into());
