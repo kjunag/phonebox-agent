@@ -49,4 +49,4 @@ Agent szuka ich na `PATH`. Bez programu widżet zostaje pusty:
 cargo test --locked
 ```
 
-GitHub Actions uruchamia testy i Clippy. Nie buduje osobnej binarki release.
+GitHub Actions uruchamia testy, Clippy i `cargo audit`. Nie buduje osobnej binarki release. Dependabot raz w tygodniu otwiera jeden pull request, który podbija tylko `Cargo.lock` w zakresach już zapisanych w `Cargo.toml`.
