@@ -542,10 +542,7 @@ async fn lan_info(State(app): State<Arc<App>>) -> Response {
 }
 
 fn asset(name: &str) -> PathBuf {
-    match std::env::var_os("PHONEBOX_ASSETS") {
-        Some(dir) => PathBuf::from(dir).join(name),
-        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(name),
-    }
+    crate::assets::asset(name)
 }
 
 fn panel_root() -> PathBuf {

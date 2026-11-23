@@ -18,7 +18,7 @@ Gdy w konfiguracji włączone jest Wi-Fi, agent nasłuchuje też na `https://0.0
 
 Konfiguracja to `~/.config/PhoneBox/config.json` (JSON z komentarzami). Inną ścieżkę podaje się przez `--config`.
 
-Pliki panelu leżą w `assets/`. Przy uruchomieniu z innego katalogu wskaż je zmienną `PHONEBOX_ASSETS`.
+Pliki panelu leżą w `assets/`. Zainstalowany program bierze je z `share/phonebox` obok binarki. `PHONEBOX_ASSETS` wskazuje inny katalog, gdy te pliki leżą gdzie indziej.
 
 ## Co widać na telefonie
 
@@ -33,7 +33,7 @@ Nie każdy widżet z oryginalnego PhoneBox jest już przeniesiony.
 
 ## Programy pomocnicze
 
-Agent działa bez nich, ale część widżetów zostaje pusta:
+Agent szuka ich na `PATH`. Bez programu widżet zostaje pusty:
 
 | Program | Do czego |
 | --- | --- |
