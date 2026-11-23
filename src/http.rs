@@ -63,6 +63,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/procs/kill", post(kill_proc))
         .route("/api/info", get(info))
         .route("/api/volume", post(volume))
+        .route("/api/art", get(art))
         .route("/api/media/{action}", post(media))
         .route("/api/push", get(push_list).delete(push_clear))
         .route("/api/push/{key}", get(push_get).post(push_set).put(push_set).delete(push_delete))
@@ -244,6 +245,13 @@ async fn volume(Query(query): Query<Vec<(String, String)>>) -> Response {
         _ => level.is_some_and(metrics::set_volume),
     };
     if ok { Json(metrics::current_audio()).into_response() } else { StatusCode::BAD_REQUEST.into_response() }
+}
+
+async fn art() -> Response {
+    match metrics::album_art() {
+        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "private, max-age=86400")], bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn media(UrlPath(action): UrlPath<String>, Query(query): Query<Vec<(String, String)>>) -> Response {

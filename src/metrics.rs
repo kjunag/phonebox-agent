@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -325,17 +326,201 @@ fn audio() -> Option<Value> {
     Some(json!({ "volume": (level * 100.0).round() as i64, "muted": text.contains("[MUTED]"), "canControl": true }))
 }
 
+const MAX_ART_BYTES: u64 = 5 * 1024 * 1024;
+
+struct ArtState {
+    url: String,
+    bytes: Vec<u8>,
+    mime: &'static str,
+    id: i64,
+}
+
+static ART: Mutex<Option<ArtState>> = Mutex::new(None);
+
+pub fn album_art() -> Option<(Vec<u8>, &'static str)> {
+    let cache = ART.lock().ok()?;
+    cache.as_ref().map(|art| (art.bytes.clone(), art.mime))
+}
+
 fn media() -> Option<Value> {
-    let text = run(&["playerctl", "metadata", "--format", "{{playerName}}\t{{status}}\t{{title}}\t{{artist}}\t{{album}}\t{{position}}\t{{mpris:length}}"])?;
+    let text = run(&["playerctl", "metadata", "--format", "{{playerName}}\t{{status}}\t{{title}}\t{{artist}}\t{{album}}\t{{position}}\t{{mpris:length}}\t{{mpris:artUrl}}"])?;
     let fields: Vec<&str> = text.trim_end_matches('\n').split('\t').collect();
     if fields.len() < 7 { return None }
     let pos_ms = fields[5].parse::<i64>().unwrap_or(0) / 1000;
     let dur_ms = fields[6].parse::<i64>().unwrap_or(0) / 1000;
+    let art_id = fields.get(7).map(|url| art_id(url)).unwrap_or(0);
     Some(json!({
         "app": fields[0].split('.').next().unwrap_or(fields[0]),
         "title": fields[2], "artist": fields[3], "album": fields[4],
-        "playing": fields[1] == "Playing", "posMs": pos_ms, "durMs": dur_ms, "artId": 0, "canSeek": dur_ms > 0,
+        "playing": fields[1] == "Playing", "posMs": pos_ms, "durMs": dur_ms, "artId": art_id, "canSeek": dur_ms > 0,
     }))
+}
+
+fn art_id(url: &str) -> i64 {
+    let url = url.trim();
+    let Ok(mut cache) = ART.lock() else { return 0 };
+    if url.is_empty() {
+        *cache = None;
+        return 0;
+    }
+    if let Some(art) = cache.as_ref() {
+        if art.url == url { return art.id }
+    }
+    let Some((bytes, mime)) = load_art(url) else {
+        *cache = None;
+        return 0;
+    };
+    let id = cache.as_ref().map(|art| art.id).unwrap_or(0).saturating_add(1).max(1);
+    *cache = Some(ArtState { url: url.to_string(), bytes, mime, id });
+    id
+}
+
+fn load_art(url: &str) -> Option<(Vec<u8>, &'static str)> {
+    let bytes = if url.starts_with("file:") {
+        let path = file_art_path(url)?;
+        if !allowed_art_path(&path) { return None }
+        let len = std::fs::metadata(&path).ok()?.len();
+        if len == 0 || len > MAX_ART_BYTES { return None }
+        std::fs::read(path).ok()?
+    } else if url.starts_with("https://") || url.starts_with("http://") {
+        download_art(url)?
+    } else {
+        return None;
+    };
+    if bytes.is_empty() || bytes.len() as u64 > MAX_ART_BYTES { return None }
+    let mime = sniff_image(&bytes)?;
+    Some((bytes, mime))
+}
+
+fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff { return Some("image/jpeg") }
+    if bytes.len() >= 8 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") { return Some("image/png") }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" { return Some("image/webp") }
+    if bytes.len() >= 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) { return Some("image/gif") }
+    None
+}
+
+fn file_art_path(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    let (host, path) = if let Some(path) = rest.strip_prefix('/') {
+        ("", path)
+    } else {
+        let (host, path) = rest.split_once('/')?;
+        (host, path)
+    };
+    if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") { return None }
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let path = percent_decode(path)?;
+    if path.contains('\0') { return None }
+    Some(PathBuf::from(format!("/{path}")))
+}
+
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let high = hex_digit(bytes[index + 1])?;
+            let low = hex_digit(bytes[index + 2])?;
+            out.push((high << 4) | low);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn allowed_art_path(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return false };
+    has_image_extension(name) || (temp_art_name(name) && path.parent().is_some_and(is_temp_dir))
+}
+
+fn has_image_extension(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".webp", ".gif"].iter().any(|ext| lower.ends_with(ext))
+}
+
+fn temp_art_name(name: &str) -> bool {
+    let Some((prefix, suffix)) = name.rsplit_once('.') else { return false };
+    prefix.starts_with('.')
+        && prefix.len() > 1
+        && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && suffix.len() == 6
+        && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn is_temp_dir(dir: &std::path::Path) -> bool {
+    let Ok(dir) = std::fs::canonicalize(dir) else { return false };
+    temp_roots().iter().any(|root| std::fs::canonicalize(root).ok().is_some_and(|root| dir == root))
+}
+
+fn temp_roots() -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from("/tmp"), PathBuf::from("/var/tmp")];
+    if let Some(dir) = std::env::var_os("TMPDIR") { roots.push(PathBuf::from(dir)); }
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") { roots.push(PathBuf::from(dir)); }
+    roots
+}
+
+fn download_art(url: &str) -> Option<Vec<u8>> {
+    let (host, port) = http_art_target(url)?;
+    let mut found = false;
+    for address in (host, port).to_socket_addrs().ok()? {
+        if !public_ip(address.ip()) { return None }
+        found = true;
+    }
+    if !found { return None }
+    let output = Command::new("curl")
+        .args(["-fsS", "--max-time", "3", "--max-filesize", "5242880", "--proto", "=http,https", "--noproxy", "*", "--", url])
+        .output().ok()?;
+    output.status.success().then_some(output.stdout).filter(|body| !body.is_empty() && body.len() as u64 <= MAX_ART_BYTES)
+}
+
+fn http_art_target(url: &str) -> Option<(&str, u16)> {
+    let (rest, default_port) = url.strip_prefix("https://").map(|rest| (rest, 443)).or_else(|| url.strip_prefix("http://").map(|rest| (rest, 80)))?;
+    if rest.contains('@') || rest.is_empty() { return None }
+    let hostport = rest.split(['/', '?', '#']).next()?;
+    if hostport.is_empty() { return None }
+    if let Some(host) = hostport.strip_prefix('[') {
+        let (host, port) = host.split_once(']')?;
+        let port = match port.strip_prefix(':') {
+            Some(port) => port.parse().ok()?,
+            None => default_port,
+        };
+        return (!host.is_empty()).then_some((host, port));
+    }
+    if let Some((host, port)) = hostport.rsplit_once(':') {
+        if !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return (!host.is_empty()).then_some((host, port.parse().ok()?));
+        }
+    }
+    Some((hostport, default_port))
+}
+
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let octets = ip.octets();
+            let cgnat = octets[0] == 100 && (octets[1] & 0xc0) == 64;
+            !ip.is_private() && !ip.is_loopback() && !ip.is_link_local() && !ip.is_broadcast()
+                && !ip.is_documentation() && !ip.is_unspecified() && !ip.is_multicast() && !cgnat
+        }
+        std::net::IpAddr::V6(ip) => {
+            let unique_local = (ip.octets()[0] & 0xfe) == 0xfc;
+            !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast() && !unique_local && (ip.segments()[0] & 0xffc0) != 0xfe80
+        }
+    }
 }
 
 fn program_key(comm: &str, exe: Option<&str>) -> String {
@@ -1073,6 +1258,25 @@ mod tests {
         client.busy[0].1 = 1_000_000_000;
         let now = start + std::time::Duration::from_secs(1);
         assert_eq!(load.observe(std::slice::from_ref(&client), now, &pdevs).get("0000:00:02.0"), Some(&100.0));
+    }
+
+    #[test]
+    fn a_local_cover_is_a_png_and_a_private_picture_is_refused() {
+        assert_eq!(file_art_path("file:///home/me/covers/a%20b.png").unwrap(), PathBuf::from("/home/me/covers/a b.png"));
+        assert!(file_art_path("file://other-host/tmp/a.png").is_none());
+        assert!(allowed_art_path(std::path::Path::new("/home/me/covers/a.png")));
+        assert!(allowed_art_path(std::path::Path::new("/tmp/.com.brave.Browser.Ab12Cd")));
+        assert!(allowed_art_path(std::path::Path::new("/tmp/.com.microsoft.Edge.Ab12Cd")));
+        assert!(!allowed_art_path(std::path::Path::new("/usr/.com.brave.Browser.Ab12Cd")));
+        assert!(!allowed_art_path(std::path::Path::new("/tmp/secret.txt")));
+        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\nrest"), Some("image/png"));
+        assert!(sniff_image(b"not an image").is_none());
+        assert!(!public_ip("127.0.0.1".parse().unwrap()));
+        assert!(!public_ip("192.168.1.20".parse().unwrap()));
+        assert!(!public_ip("100.64.0.1".parse().unwrap()));
+        assert!(public_ip("1.1.1.1".parse().unwrap()));
+        assert_eq!(http_art_target("https://i.scdn.co/image/abc"), Some(("i.scdn.co", 443)));
+        assert!(http_art_target("https://user:pass@i.scdn.co/image/abc").is_none());
     }
 
     #[test]
